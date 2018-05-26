@@ -34,6 +34,8 @@
 
 Require Import Equivalence EquivDec.
 Require Import Coqlib.
+Require Import Pnat.
+
 
 (* To avoid useless definitions of inductors in extracted code. *)
 Local Unset Elimination Schemes.
@@ -1200,6 +1202,18 @@ Module EMap(X: EQUALITY_TYPE) <: MAP.
     intros. unfold get, map. reflexivity.
   Qed.
 End EMap.
+
+
+Module NAT_EQUALITY.
+  Definition t := nat.
+  Lemma eq: forall (x y: nat), {x = y} + {x <> y}.
+  Proof.
+    intros.
+    decide equality.
+  Qed.
+End NAT_EQUALITY.
+
+Module NatMap := EMap(NAT_EQUALITY).
 
 (** * A partial implementation of trees over any type that injects into type [positive] *)
 

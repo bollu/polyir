@@ -13,7 +13,7 @@ Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 Require Import Maps.
 
-
+Local Notation "a # b" := (ZMap.get b a) (at level 1).
 
 (** We will follow the development from this paper:
 http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.43.8188&rep=rep1&type=pdf*)
@@ -23,38 +23,93 @@ Open Scope list_scope.
 Import ListNotations.
 
 Module PolyIR.
-  Parameter MemoryValue : Type.
+  Import NatMap.
 
 Inductive BinopType :=
 | Add : BinopType
 | Sub: BinopType.
             
 
-(** Syntax of PolyIR **)
-Notation IndvarIndex := nat.
-Inductive PolyExpr :=
-| EIndvar: IndvarIndex -> PolyExpr
-| EBinop: BinopType -> PolyExpr -> PolyExpr -> PolyExpr
-| EMul: Z -> PolyExpr -> PolyExpr.
 
-Definition IdentIndex := nat.
+(* Value that expressions can take *)
+Notation Value := Z.
+    
+
+(* Identifiers *)
+Definition Ident := Z.
+
+(** Syntax of PolyIR **)
+Definition IndvarIndex := Z.
+Inductive PolyExpr :=
+| Eindvar: IndvarIndex -> PolyExpr
+| Ebinop: BinopType -> PolyExpr -> PolyExpr -> PolyExpr
+| Emul: Z -> PolyExpr -> PolyExpr
+| Econst: Z -> PolyExpr
+| Eload: Ident
+         -> PolyExpr (* Load Ix *)
+         -> PolyExpr
+.
+         
+    
 Inductive PolyStmt :=
-| SStore: IdentIndex
+| Sstore: Ident
           -> PolyExpr (* Ix *)
           -> PolyExpr (* Store val *)
           -> PolyStmt
-| Sload: IdentIndex
-         -> PolyExpr (* Load Ix *)
-         -> PolyStmt
 | Sseq: PolyStmt
         -> PolyStmt
         -> PolyStmt
-| Sskip: PolyStmt.
+| Sskip: PolyStmt
+| Sloop: IndvarIndex (* New induction variable name *)
+         -> PolyExpr (* expression for upper bound *)
+         -> PolyStmt (* loop body *)
+.
+
+
                   
 
-Notation MemoryIndex := nat.
-Definition MemoryChunk := MemoryIndex -> MemoryValue.
-Definition Memory := NMap IdentIndex MemoryChunk.
+(* Memory chunk *)
+Notation ChunkNum := Z.
+Notation MemoryChunk := (ZMap.t (option Value)).
+(* Memory is a map indexed by naturals to disjoint memory chunks *)
+Notation Memory := (ZMap.t (option MemoryChunk)).
+
+
+Check (PMap.set).
+Definition setMemory (chunknum: Z)
+           (chunkix: Z)
+           (val: Value)
+           (mem: Memory) : Memory :=
+  let memchunk := mem # chunknum in
+  let memchunk' := option_map (fun chk => ZMap.set chunkix (Some val) chk)
+                              memchunk
+  in ZMap.set chunknum memchunk' mem.
+
+  
+
+Definition option_bind
+  {A B: Type}
+    (oa: option A)
+    (f: A -> option B) : option B :=
+      match oa with
+      | None => None
+      | Some a => f a
+      end.
+
+Infix ">>=" := option_bind (at level 100).
+                            
+                            
+  
+Definition getMemory (chunknum: Z)
+           (chunkix: Z)
+           (mem: Memory) : option Value :=
+  (mem # chunknum) >>= (fun chk => chk # chunkix).
+  
+                                                                                         
+Definition liftoption3 {a b c d: Type} (f: a -> b -> c -> d)
+           (oa: option a) (ob: option b) (oc: option c): option d :=
+  oa >>= (fun a => ob >>= (fun b => oc >>= (fun c => Some (f a b c)))).
+
 
 Record PolyLoop :=
   mkPolyLoop {
@@ -63,14 +118,88 @@ Record PolyLoop :=
       loopBody: PolyStmt;
     }.
 
+(* Mapping from indexing expressions to environments *)
 Record PolyEnvironment :=
   mkPolyEnvironment {
-      
+      (* map indvars to values *)
+      polyenvIndvarToValue: ZMap.t (option Value);
+      polyenvIdentToChunkNum: ZMap.t (option ChunkNum);
     }.
-Fixpoint evalExprFn (pe: PolyExpr) :=
+
+Fixpoint evalExprFn (pe: PolyExpr)
+         (env: PolyEnvironment)
+         (mem: Memory): option Value :=
   match pe with
-    | EIndvar
-  
+  | Eindvar i => ((polyenvIndvarToValue env) # i)
+  | Econst c => Some c
+  | Eload id ixe => let ochunknum := (polyenvIdentToChunkNum env) # id in
+                   let oix := evalExprFn ixe env mem in
+                   ochunknum >>=
+                             (fun chunknum => oix >>=
+                                               fun ix =>
+                                                 getMemory chunknum ix mem)
+  | _ => None
+  end.
+    
+
+Check (NMap.set).
+
+Compute (ZIndexed.t).
+Check (ZMap.get).
+Inductive exec_stmt : PolyEnvironment -> Memory -> PolyStmt -> Memory -> Prop:=
+| exec_Sstore: forall (chunknum ix: Z)
+                  (storeval: Z)
+                  (storevale ixe: PolyExpr)
+                  (env: PolyEnvironment)
+                  (mem mem': Memory)
+                  (ident: Ident),
+    evalExprFn storevale env mem = Some storeval ->
+    evalExprFn ixe env mem = Some ix ->
+    ((polyenvIdentToChunkNum env) # ident = Some chunknum) ->
+    setMemory chunknum ix storeval mem = mem' ->
+    exec_stmt env mem (Sstore ident ixe storevale) mem'
+| exec_SSeq: forall (env: PolyEnvironment)
+               (mem mem' mem'': Memory)
+               (s1 s2: PolyStmt),
+    exec_stmt env mem s1 mem' ->
+    exec_stmt env mem' s2 mem'' ->
+    exec_stmt env mem (Sseq s1 s2) mem''
+| exec_Sskip: forall (mem : Memory) (env: PolyEnvironment),
+    exec_stmt env mem Sskip mem.
+
+
+Lemma exec_stmt_deterministic: forall (mem : Memory)
+                                 (env: PolyEnvironment)
+                                 (s: PolyStmt),
+    forall (mem1: Memory), exec_stmt env mem s mem1 ->
+                      forall (mem2: Memory), exec_stmt env mem s mem2 ->
+                                        mem1 = mem2.
+Proof.
+  intros until s.
+  intros mem1 EXECS1.
+  induction EXECS1;
+    intros m2 EXECS2;
+    inversion EXECS2; subst; auto.
+
+
+  - repeat (match goal with
+            | [H1: ?X = ?Y, H2: ?X = ?Z |- _ ] =>  rewrite H1 in H2;
+                                                 inversion H2;
+                                                 clear H1; clear H2
+            end).
+    auto.
+    
+    - assert (mem' = mem'0).
+      apply IHEXECS1_1; auto.
+      subst.
+
+      apply IHEXECS1_2; auto.
+Qed.
+
+(* Exec loop from end to begin *)
+Inductive exec_loop_eb:
+
+
 
 End PolyIR.
 
