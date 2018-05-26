@@ -240,7 +240,7 @@ Inductive exec_stmt : PolyEnvironment -> Memory
     evalExprFn ube env mem = Some ub ->
     evalLoopIndvar env indvar = Some ivval ->
     (ivval >= ub)%Z ->
-    exec_stmt env mem Sskip mem (removeLoopFromEnv env indvar)
+    exec_stmt env mem (Sloop indvar ube inner) mem (removeLoopFromEnv env indvar)
 .
        
 
@@ -258,23 +258,40 @@ Proof.
   generalize dependent env2.
   generalize dependent mem2.
   induction EXECS1;
-    intros mm2 env2 EXECS2;
-    inversion EXECS2; subst; auto.
-
-  - repeat (match goal with
+    intros mem2 env2 EXECS2;
+    inversion EXECS2; subst; auto;
+      (* Dispatch cases which require simple rewrites *)
+      repeat (match goal with
             | [H1: ?X = ?Y, H2: ?X = ?Z |- _ ] =>  rewrite H1 in H2;
                                                  inversion H2;
                                                  clear H1; clear H2
-            end).
-    auto.
+              end); auto;
+        (* dispatch cases that are resolved by indvar mutual exclusion *)
+        try omega.
+
+
     
     - assert (S1_EQ: mem' = mem'0 /\ env' = env'0).
       apply IHEXECS1_1; auto.
       destruct S1_EQ as [MEMEQ ENVEQ].
       subst.
 
-      apply IHEXECS1_2; auto.
+    - assert (EQ: mem'' = mem2 /\ env'' = env2).
+      apply IHEXECS1_2. auto.
+
+      destruct EQ as [MEMEQ ENVEQ]. subst.
+      auto.
+
+    - assert (EQ: mem' = mem2 /\ env' = env'0).
+      apply IHEXECS1. auto.
+
+      
+      destruct EQ as [MEMEQ ENVEQ]. subst.
+      auto.
 Qed.
+
+
+
 
 (* Exec loop from end to begin *)
 Inductive exec_loop_eb:
