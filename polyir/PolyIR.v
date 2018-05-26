@@ -8,6 +8,23 @@ Require Import Ring_tac.
 Require Import FunctionalExtensionality.
 Require Import Maps.
 Require Import EquivDec.
+(** Import VPL for polyhedral goodness **)
+From Vpl Require Import PedraQ DomainInterfaces.
+Require Import VplTactic.Tactic.
+Add Field Qcfield: Qcft (decidable Qc_eq_bool_correct, constants [vpl_cte]).
+
+Import PedraQ.FullDom.
+Locate imp.
+Check (join).
+
+(** Cool, VPLTactic works **)
+Example demo1 (A:Type) (f: Qc -> A) (v1: Qc):
+  v1 <= 1 -> (f v1) <> (f 1) -> v1 < 1.
+Proof.
+  vpl_auto.
+Qed.
+
+
 (* 
 From mathcomp Require ssreflect ssrbool ssrfun bigop.
 Import ssreflect.SsrSyntax.
@@ -16,7 +33,7 @@ Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 *)
 
-Local Notation "a # b" := (ZMap.get b a) (at level 1).
+Local Notation "a ## b" := (ZMap.get b a) (at level 1).
 
 (** We will follow the development from this paper:
 http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.43.8188&rep=rep1&type=pdf*)
@@ -97,7 +114,7 @@ Definition storeMemoryChunk (six: list Z)
            (v: Value) (mc: MemoryChunk): MemoryChunk :=
   let dim := memoryChunkDim mc in
   {| memoryChunkDim := dim;
-     memoryChunkModel := if List.length six =? dim
+     memoryChunkModel := if  Nat.eqb (List.length six)  dim
                          then (fun ix => if ix  == six
                                       then Some v
                                       else (memoryChunkModel mc) ix)
@@ -107,7 +124,7 @@ Definition storeMemoryChunk (six: list Z)
   |}.
 
 Definition loadMemoryChunk (lix: list Z)(mc: MemoryChunk): option Value :=
-  if List.length lix =? (memoryChunkDim mc)
+  if Nat.eqb (List.length lix) (memoryChunkDim mc)
   then (memoryChunkModel mc lix)
   else None.
   
@@ -120,7 +137,7 @@ Definition storeMemory (chunknum: Z)
            (chunkix: list Z)
            (val: Value)
            (mem: Memory) : Memory :=
-  let memchunk := mem # chunknum in
+  let memchunk := mem ## chunknum in
   let memchunk' := option_map (fun chk => storeMemoryChunk chunkix val chk )
                               memchunk
   in ZMap.set chunknum memchunk' mem.
@@ -143,7 +160,7 @@ Infix ">>=" := option_bind (at level 100).
 Definition loadMemory (chunknum: Z)
            (chunkix: list Z)
            (mem: Memory) : option Value :=
-  (mem # chunknum) >>= (fun chk => loadMemoryChunk chunkix chk).
+  (mem ## chunknum) >>= (fun chk => loadMemoryChunk chunkix chk).
   
                                                                                          
 Definition liftoption3 {a b c d: Type} (f: a -> b -> c -> d)
@@ -169,13 +186,13 @@ Record PolyEnvironment :=
 (** Get the induction variable of the "current" loop **)
 Definition evalLoopIndvar (env: PolyEnvironment)
            (indvar: Indvar): option Value :=
-  (polyenvIndvarToValue env) # indvar.
+  (polyenvIndvarToValue env) ## indvar.
 
 (** Increase the induction variable by 1 **)
 Definition bumpLoopIndvar (env: PolyEnvironment)
            (indvar: Indvar) : PolyEnvironment :=
   let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
-  let option_oldiv := ivToValue # indvar in
+  let option_oldiv := ivToValue ## indvar in
   match option_oldiv with
   | None => env
   | Some oldiv => let newIvToValue := ZMap.set indvar (Some (1 + oldiv)%Z) ivToValue in
@@ -215,9 +232,9 @@ Definition removeLoopFromEnv (env: PolyEnvironment)
 
 
 Fixpoint evalAffineExprFn (env: PolyEnvironment) 
-         (ae: AffineExpr) :=
+         (ae: AffineExpr) : option Value :=
   match ae with
-  | Aindvar i => ((polyenvIndvarToValue env) # i)
+  | Aindvar i => ((polyenvIndvarToValue env) ## i)
   | Aconst c => Some c
   | _ => None
   end .
@@ -227,7 +244,7 @@ Fixpoint evalExprFn (pe: PolyExpr)
          (mem: Memory): option Value :=
   match pe with
   | Eaffine ae => evalAffineExprFn env ae
-  | Eload id ixe => let ochunknum := (polyenvIdentToChunkNum env) # id in
+  | Eload id ixe => let ochunknum := (polyenvIdentToChunkNum env) ## id in
                    let oix := evalExprFn ixe env mem in
                    ochunknum >>=
                              (fun chunknum => oix >>=
@@ -247,7 +264,7 @@ Inductive exec_stmt : PolyEnvironment -> Memory
                   (ident: Ident),
     evalExprFn storevale env mem = Some storeval ->
     evalExprFn ixe env mem = Some ix ->
-    ((polyenvIdentToChunkNum env) # ident = Some chunknum) ->
+    ((polyenvIdentToChunkNum env) ## ident = Some chunknum) ->
     storeMemory chunknum [ix] storeval mem = mem' ->
     exec_stmt env mem (Sstore ident ixe storevale) mem' env
 | exec_SSeq: forall (env env' env'': PolyEnvironment)
@@ -342,7 +359,7 @@ Fixpoint option_traverse {A: Type} (lo: list (option A)): option (list A) :=
 
 (* define semantics for evaluating a schedule *)
 Fixpoint evalMultidimAffineExpr (env: PolyEnvironment)
-         (s: MultidimAffineExpr): option (list Value) :=
+         (s: MultidimAffineExpr):  option (list Value) :=
   option_traverse (List.map (evalAffineExprFn env) s).
 
 
@@ -365,6 +382,8 @@ Record ScopStmt :=
       (** Function from the canonical induction variables to the schedule
          timepoint. That is, interpreted as the output dimensions when
          invoked against the input **)
+      (** Note that the schedule dimensions can be larger than the input
+      dimension **)
       scopStmtSchedule : MultidimAffineExpr;
       (** Access function to model where to read or write from **)
       scopStmtAccessFunction: MultidimAffineExpr;
@@ -375,9 +394,9 @@ Record ScopStmt :=
 Record Scop :=
   mkScop {
       (** The statements in this scop **)
-      scopStmts := list ScopStmt;
+      scopStmts : list ScopStmt;
       (** Induction variables in this scop **)
-      indvars := list Indvar;
+      indvars : list Indvar;
     }.
 
 Fixpoint all (bs: list bool): bool :=
@@ -397,12 +416,12 @@ Fixpoint zipWith {X Y Z: Type} (f: X -> Y -> Z)
 
 (* Check if the current value of the induction variables is within
 the scop stmts domain *)
-Definition isScopStmtActive (ss: ScopStmt) (env: PolyEnvironment): bool :=
+Definition isScopStmtActive (env: PolyEnvironment) (ss: ScopStmt) : bool :=
   let oevalDom := evalMultidimAffineExpr env (scopStmtDomain ss) in
   let oevalIvs := option_traverse (List.map (evalLoopIndvar env)
                                        (scopStmtIndvars ss)) in
 
-  if length (scopStmtDomain ss) =? length (scopStmtIndvars ss)
+  if Nat.eqb (length (scopStmtDomain ss)) (length (scopStmtIndvars ss))
   then
     match oevalDom with
     | Some evalDom => match oevalIvs with
@@ -420,7 +439,7 @@ Definition storeArray (arrayIdent: Ident)
            (val: Value)
            (env: PolyEnvironment)
            (mem: Memory) : Memory :=
-  match (polyenvIdentToChunkNum env) # arrayIdent with
+  match (polyenvIdentToChunkNum env) ## arrayIdent with
   | Some chnk => storeMemory chnk ix val mem
   | None => mem
   end.
@@ -442,6 +461,61 @@ Definition runScopStmt (ss: ScopStmt)
   | (Some accessix, SSTload) => mem
   | (None, _) => mem
   end.
+
+Check (fold_left).
+Check (List.filter).
+
+(* Add a new induction varible into the environment, replacing
+the previous value of the induction variable (if it existed ) *)
+Definition setIndvarInEnv (env: PolyEnvironment)
+           (indvar: Indvar)
+           (val: Value) : PolyEnvironment :=
+  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+  let newIvToValue := ZMap.set indvar (Some (val%Z)) ivToValue in
+  {|
+      polyenvIndvarToValue := newIvToValue; 
+      polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
+      polyenvLoopDepth := polyenvLoopDepth env
+  |}.
+
+(* If the list of affine expressions are valid: that is, expression at index J only refers to variables in indeces 0 <= i < J,
+then this will return a valid list of bounds. Note that usually,
+ domain expressions need to be evaluated this way to find domains.
+ However, objects such as general affine expressions should not be
+ evaluated this way! *)
+Fixpoint getMultidimAffineExprExtent
+         (aes: MultidimAffineExpr)
+         (ivs: list Indvar)
+         (env: PolyEnvironment) :  list (option Value) :=
+  match (ivs, aes) with
+  | (_, []) =>  []
+  | ([], _) => []
+  | (iv::ivs', ae::aes') =>
+    let oval := evalAffineExprFn env ae in
+    match oval with
+    | None => []
+    | Some val =>
+      let env' := setIndvarInEnv env iv val in
+      (Some val)::(getMultidimAffineExprExtent aes' ivs' env')
+    end
+  end.
+  
+  
+
+(** Get the statements whose domain is contained in the current environment **)
+Definition getActiveScopStmtsInScop (s: Scop)
+           (env: PolyEnvironment): list ScopStmt :=
+  List.filter (isScopStmtActive env) (scopStmts s).
+
+(** Run a scop for a step with some given environment and memory. **)
+Definition runScopStepWithEnvAndMem (s: Scop)
+           (env: PolyEnvironment)
+           (mem: Memory) : Memory :=
+  List.fold_left (fun m ss => runScopStmt ss env m)
+                 (getActiveScopStmtsInScop s env) mem.
+
+
+  
+  
+
 End PolyIR.
-
-
