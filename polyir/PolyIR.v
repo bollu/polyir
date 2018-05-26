@@ -40,11 +40,14 @@ Definition Ident := Z.
 
 (** Syntax of PolyIR **)
 Definition Indvar := Z.
+Inductive AffineExpr :=
+| Aindvar:  Indvar -> AffineExpr
+| Abinop: BinopType -> AffineExpr -> AffineExpr -> AffineExpr
+| Amul: Z -> AffineExpr -> AffineExpr
+| Aconst: Z -> AffineExpr
+.
 Inductive PolyExpr :=
-| Eindvar: Indvar -> PolyExpr
-| Ebinop: BinopType -> PolyExpr -> PolyExpr -> PolyExpr
-| Emul: Z -> PolyExpr -> PolyExpr
-| Econst: Z -> PolyExpr
+| Eaffine: AffineExpr -> PolyExpr
 | Eload: Ident
          -> PolyExpr (* Load Ix *)
          -> PolyExpr
@@ -175,19 +178,25 @@ Definition removeLoopFromEnv (env: PolyEnvironment)
 
 
 
+Fixpoint evalAffineExprFn (env: PolyEnvironment) 
+         (ae: AffineExpr) :=
+  match ae with
+  | Aindvar i => ((polyenvIndvarToValue env) # i)
+  | Aconst c => Some c
+  | _ => None
+  end .
+
 Fixpoint evalExprFn (pe: PolyExpr)
          (env: PolyEnvironment)
          (mem: Memory): option Value :=
   match pe with
-  | Eindvar i => ((polyenvIndvarToValue env) # i)
-  | Econst c => Some c
+  | Eaffine ae => evalAffineExprFn env ae
   | Eload id ixe => let ochunknum := (polyenvIdentToChunkNum env) # id in
                    let oix := evalExprFn ixe env mem in
                    ochunknum >>=
                              (fun chunknum => oix >>=
                                                fun ix =>
                                                  getMemory chunknum ix mem)
-  | _ => None
   end.
     
 
@@ -290,11 +299,92 @@ Proof.
       auto.
 Qed.
 
+(* A schedule is a multi-dimensional timepoint that is a function of
+its inputs *)
+Notation MultidimAffineExpr := (list AffineExpr).
+
+Fixpoint option_traverse {A: Type} (lo: list (option A)): option (list A) :=
+  match lo with
+  | [] => Some []
+  | oa::lo' => oa >>= (fun a => option_map (cons a) (option_traverse lo'))
+  end.
+
+
+(* define semantics for evaluating a schedule *)
+Fixpoint evalMultidimAffineExpr (env: PolyEnvironment)
+         (s: MultidimAffineExpr): option (list Value) :=
+  option_traverse (List.map (evalAffineExprFn env) s).
+
+
+Inductive ScopStmtType :=  SSTstore | SSTload.
+(** Note that for now, we don't care what is stored or loaded, because
+conceptually, we don't actually care either. We just want to make sure
+that the reads/writes are modeled *)
+Record ScopStmt :=
+ mkScopStmt {
+     scopStmtArrayIdent : Ident;
+     (** The induction variables this scopstmt had originally **)
+     scopStmtIndvars: list Indvar;
+      (** The domain of the scop statement. That is, interpreted as
+          0 <= <indvars[i]> <= <domain[i]> **)
+      scopStmtDomain: MultidimAffineExpr;
+      (** Function from the canonical induction variables to the schedule
+         timepoint. That is, interpreted as the output dimensions when
+         invoked against the input **)
+      scopStmtExecSchedule : MultidimAffineExpr;
+      (** Access function to model where to read or write from **)
+      scopStmtAccessFunction: MultidimAffineExpr;
+      (** Type of the scop statement: store or load **)
+      scopStmtType: ScopStmtType
+   }.
+
+Record Scop :=
+  mkScop {
+      (** The statements in this scop **)
+      scopStmts := list ScopStmt;
+      (** Induction variables in this scop **)
+      indvars := list Indvar;
+    }.
+
+Fixpoint all (bs: list bool): bool :=
+  List.fold_right andb true bs.
+
+Fixpoint zipWith {X Y Z: Type} (f: X -> Y -> Z)
+         (xs: list X)
+         (ys: list Y) : list Z :=
+  match xs  with
+  | [] => []
+  | x::xs' => match ys with
+             | [] => []
+             | y::ys' => (f x y)::zipWith f xs' ys'
+             end
+  end.
+
+
+(* Check if the current value of the induction variables is within
+the scop stmts domain *)
+Definition isScopStmtActive (ss: ScopStmt) (env: PolyEnvironment): bool :=
+  let oevalDom := evalMultidimAffineExpr env (scopStmtDomain ss) in
+  let oevalIvs := option_traverse (List.map (evalLoopIndvar env)
+                                       (scopStmtIndvars ss)) in
+
+  if length (scopStmtDomain ss) =? length (scopStmtIndvars ss)
+  then
+    match oevalDom with
+    | Some evalDom => match oevalIvs with
+                     | Some evalIvs => all (zipWith (Z.leb) evalIvs evalDom )
+                     | None => false
+                     end
+    | None => false
+    end
+  else false
+  .
+                                  
+                                  
+  
 
 
 
-(* Exec loop from end to begin *)
-Inductive exec_loop_eb:
 
 
 
