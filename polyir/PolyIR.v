@@ -39,9 +39,9 @@ Notation Value := Z.
 Definition Ident := Z.
 
 (** Syntax of PolyIR **)
-Definition IndvarIndex := Z.
+Definition Indvar := Z.
 Inductive PolyExpr :=
-| Eindvar: IndvarIndex -> PolyExpr
+| Eindvar: Indvar -> PolyExpr
 | Ebinop: BinopType -> PolyExpr -> PolyExpr -> PolyExpr
 | Emul: Z -> PolyExpr -> PolyExpr
 | Econst: Z -> PolyExpr
@@ -60,9 +60,10 @@ Inductive PolyStmt :=
         -> PolyStmt
         -> PolyStmt
 | Sskip: PolyStmt
-| Sloop: IndvarIndex (* New induction variable name *)
+| Sloop: Indvar  (* Current loop induction variable index *)
          -> PolyExpr (* expression for upper bound *)
          -> PolyStmt (* loop body *)
+         -> PolyStmt
 .
 
 
@@ -121,10 +122,58 @@ Record PolyLoop :=
 (* Mapping from indexing expressions to environments *)
 Record PolyEnvironment :=
   mkPolyEnvironment {
-      (* map indvars to values *)
       polyenvIndvarToValue: ZMap.t (option Value);
       polyenvIdentToChunkNum: ZMap.t (option ChunkNum);
+      polyenvLoopDepth: Z;
     }.
+
+(** Get the induction variable of the "current" loop **)
+Definition evalLoopIndvar (env: PolyEnvironment)
+           (indvar: Indvar): option Value :=
+  (polyenvIndvarToValue env) # indvar.
+
+(** Increase the induction variable by 1 **)
+Definition bumpLoopIndvar (env: PolyEnvironment)
+           (indvar: Indvar) : PolyEnvironment :=
+  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+  let option_oldiv := ivToValue # indvar in
+  match option_oldiv with
+  | None => env
+  | Some oldiv => let newIvToValue := ZMap.set indvar (Some (1 + oldiv)%Z) ivToValue in
+                 {|
+                   polyenvIndvarToValue := newIvToValue; 
+                   polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
+                   polyenvLoopDepth := polyenvLoopDepth env;
+                 |}
+  end.
+
+
+
+Definition addLoopToEnv (env: PolyEnvironment)
+                        (indvar: Indvar): PolyEnvironment :=
+  let oldLoopDepth := polyenvLoopDepth env in
+  let newLoopDepth := (oldLoopDepth + 1)%Z in
+  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+  let newIvToValue := ZMap.set indvar (Some (0%Z)) ivToValue in
+  {|
+      polyenvIndvarToValue := newIvToValue; 
+      polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
+      polyenvLoopDepth := newLoopDepth
+  |}.
+
+Definition removeLoopFromEnv (env: PolyEnvironment)
+                        (indvar: Indvar): PolyEnvironment :=
+  let oldLoopDepth := polyenvLoopDepth env in
+  let newLoopDepth := (oldLoopDepth + 1)%Z in
+  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+  let newIvToValue := ZMap.set indvar (None) ivToValue in
+  {|
+      polyenvIndvarToValue := newIvToValue; 
+      polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
+      polyenvLoopDepth := newLoopDepth
+  |}.
+
+
 
 Fixpoint evalExprFn (pe: PolyExpr)
          (env: PolyEnvironment)
@@ -142,10 +191,6 @@ Fixpoint evalExprFn (pe: PolyExpr)
   end.
     
 
-Check (NMap.set).
-
-Compute (ZIndexed.t).
-Check (ZMap.get).
 Inductive exec_stmt : PolyEnvironment -> Memory 
                       -> PolyStmt
                       -> Memory -> PolyEnvironment -> Prop:=
@@ -167,7 +212,36 @@ Inductive exec_stmt : PolyEnvironment -> Memory
     exec_stmt env' mem' s2 mem'' env'' ->
     exec_stmt env mem (Sseq s1 s2) mem'' env''
 | exec_Sskip: forall (mem : Memory) (env: PolyEnvironment),
-    exec_stmt env mem Sskip mem env.
+    exec_stmt env mem Sskip mem env
+| exec_Sloop_start: forall (mem: Memory)
+                      (indvar: Indvar)
+                      (ube: PolyExpr)
+                      (env: PolyEnvironment)
+                      (inner: PolyStmt),
+    evalLoopIndvar env indvar = None (* We don't have the indvar *)
+    -> exec_stmt env mem (Sloop indvar ube inner) mem (addLoopToEnv env indvar)
+| exec_Sloop_loop: forall (mem mem': Memory)
+                    (env env': PolyEnvironment)
+                    (indvar: Indvar)
+                    (ube: PolyExpr)
+                    (ub ivval: Value)
+                    (inner: PolyStmt),
+    evalExprFn ube env mem = Some ub ->
+    evalLoopIndvar env indvar = Some ivval ->
+    (ivval < ub)%Z ->
+    exec_stmt env mem inner mem' env' ->
+    exec_stmt env mem (Sloop indvar ube inner) mem' (bumpLoopIndvar env' indvar)
+| exec_Sloop_end: forall (mem: Memory)
+                    (env: PolyEnvironment)
+                    (indvar: Indvar)
+                    (ube: PolyExpr)
+                    (ub ivval: Value)
+                    (inner: PolyStmt),
+    evalExprFn ube env mem = Some ub ->
+    evalLoopIndvar env indvar = Some ivval ->
+    (ivval >= ub)%Z ->
+    exec_stmt env mem Sskip mem (removeLoopFromEnv env indvar)
+.
        
 
 
