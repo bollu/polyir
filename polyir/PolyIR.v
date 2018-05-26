@@ -54,7 +54,7 @@ Inductive PolyStmt :=
 
 Notation MemoryIndex := nat.
 Definition MemoryChunk := MemoryIndex -> MemoryValue.
-Definition Memory := Map IdentIndex MemoryChunk.
+Definition Memory := NMap IdentIndex MemoryChunk.
 
 Record PolyLoop :=
   mkPolyLoop {

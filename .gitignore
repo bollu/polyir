@@ -1,3 +1,4 @@
+
 # -*- mode: gitignore; -*-
 *~
 \#*\#
@@ -92,3 +93,6 @@ Session.vim
 tags
 # Persistent undo
 [._]*.un~
+
+CoqMakefile.conf
+Makefile.coq
