@@ -1,0 +1,198 @@
+include Makefile.config
+
+ifeq ($(wildcard $(ARCH)_$(BITSIZE)),)
+ARCHDIRS=$(ARCH)
+else
+ARCHDIRS=$(ARCH)_$(BITSIZE) $(ARCH)
+endif
+
+DIRS=lib common $(ARCHDIRS) backend cfrontend driver debug\
+  flocq/Core flocq/Prop flocq/Calc flocq/Appli exportclight \
+  cparser cparser/validator
+
+RECDIRS=lib common $(ARCHDIRS) backend cfrontend driver flocq exportclight cparser
+
+COQINCLUDES=$(foreach d, $(RECDIRS), -R $(d) compcert.$(d))
+
+COQC="$(COQBIN)coqc" -q $(COQINCLUDES) $(COQCOPTS)
+COQDEP="$(COQBIN)coqdep" $(COQINCLUDES)
+COQDOC="$(COQBIN)coqdoc"
+COQEXEC="$(COQBIN)coqtop" $(COQINCLUDES) -batch -load-vernac-source
+COQCHK="$(COQBIN)coqchk" $(COQINCLUDES)
+MENHIR=menhir
+CP=cp
+
+VPATH=$(DIRS)
+GPATH=$(DIRS)
+
+VLIB=Axioms.v Coqlib.v Intv.v Maps.v Heaps.v Lattice.v Ordered.v \
+  Iteration.v Integers.v Archi.v Fappli_IEEE_extra.v Floats.v \
+  Parmov.v UnionFind.v Wfsimpl.v \
+  Postorder.v FSetAVLplus.v IntvSets.v Decidableplus.v BoolEqual.v
+
+SRC=polyir/PolyIR.v
+
+# All source files
+
+FILES=$(VLIB) $(SRC)
+
+# Generated source files
+
+GENERATED=
+
+all:
+	@test -f .depend || $(MAKE) depend
+	$(MAKE) proof
+	$(MAKE) extraction
+	$(MAKE) ccomp
+ifeq ($(HAS_RUNTIME_LIB),true)
+	$(MAKE) runtime
+endif
+ifeq ($(CLIGHTGEN),true)
+	$(MAKE) clightgen
+endif
+
+
+proof: $(FILES:.v=.vo)
+
+# Turn off some warnings for compiling Flocq
+flocq/%.vo: COQCOPTS+=-w -compatibility-notation
+
+extraction: extraction/STAMP
+
+extraction/STAMP: $(FILES:.v=.vo) extraction/extraction.v $(ARCH)/extractionMachdep.v
+	rm -f extraction/*.ml extraction/*.mli
+	$(COQEXEC) extraction/extraction.v
+	touch extraction/STAMP
+
+.depend.extr: extraction/STAMP tools/modorder driver/Version.ml
+	$(MAKE) -f Makefile.extr depend
+
+ccomp: .depend.extr compcert.ini driver/Version.ml FORCE
+	$(MAKE) -f Makefile.extr ccomp
+ccomp.byte: .depend.extr compcert.ini driver/Version.ml FORCE
+	$(MAKE) -f Makefile.extr ccomp.byte
+
+clightgen: .depend.extr compcert.ini exportclight/Clightdefs.vo driver/Version.ml FORCE
+	$(MAKE) -f Makefile.extr clightgen
+clightgen.byte: .depend.extr compcert.ini exportclight/Clightdefs.vo driver/Version.ml FORCE
+	$(MAKE) -f Makefile.extr clightgen.byte
+
+runtime:
+	$(MAKE) -C runtime
+
+FORCE:
+
+.PHONY: proof extraction runtime FORCE
+
+documentation: doc/coq2html $(FILES)
+	mkdir -p doc/html
+	rm -f doc/html/*.html
+	doc/coq2html -o 'doc/html/%.html' doc/*.glob \
+          $(filter-out doc/coq2html cparser/Parser.v, $^)
+	cp doc/coq2html.css doc/coq2html.js doc/html/
+
+doc/coq2html: doc/coq2html.ml
+	ocamlopt -w +a-29 -o doc/coq2html str.cmxa doc/coq2html.ml
+
+doc/coq2html.ml: doc/coq2html.mll
+	ocamllex -q doc/coq2html.mll
+
+tools/ndfun: tools/ndfun.ml
+	ocamlopt -o tools/ndfun str.cmxa tools/ndfun.ml
+tools/modorder: tools/modorder.ml
+	ocamlopt -o tools/modorder str.cmxa tools/modorder.ml
+
+latexdoc:
+	cd doc; $(COQDOC) --latex -o doc/doc.tex -g $(FILES)
+
+%.vo: %.v
+	@rm -f doc/$(*F).glob
+	@echo "COQC $*.v"
+	@$(COQC) -dump-glob doc/$(*F).glob $*.v
+
+%.v: %.vp tools/ndfun
+	@rm -f $*.v
+	@echo "Preprocessing $*.vp"
+	@tools/ndfun $*.vp > $*.v || { rm -f $*.v; exit 2; }
+	@chmod a-w $*.v
+
+compcert.ini: Makefile.config
+	(echo "stdlib_path=$(LIBDIR)"; \
+         echo "prepro=$(CPREPRO)"; \
+         echo "linker=$(CLINKER)"; \
+         echo "asm=$(CASM)"; \
+	 echo "prepro_options=$(CPREPRO_OPTIONS)";\
+	 echo "asm_options=$(CASM_OPTIONS)";\
+	 echo "linker_options=$(CLINKER_OPTIONS)";\
+         echo "arch=$(ARCH)"; \
+         echo "model=$(MODEL)"; \
+         echo "abi=$(ABI)"; \
+         echo "endianness=$(ENDIANNESS)"; \
+         echo "system=$(SYSTEM)"; \
+         echo "has_runtime_lib=$(HAS_RUNTIME_LIB)"; \
+         echo "has_standard_headers=$(HAS_STANDARD_HEADERS)"; \
+         echo "asm_supports_cfi=$(ASM_SUPPORTS_CFI)"; \
+	 echo "response_file_style=$(RESPONSEFILE)";) \
+        > compcert.ini
+
+driver/Version.ml: VERSION
+	cat VERSION \
+	| sed -e 's|\(.*\)=\(.*\)|let \1 = \"\2\"|g' \
+	>driver/Version.ml
+
+cparser/Parser.v: cparser/Parser.vy
+	$(MENHIR) --coq cparser/Parser.vy
+
+depend: $(GENERATED) depend1
+
+depend1: $(FILES) exportclight/Clightdefs.v
+	@echo "Analyzing Coq dependencies"
+	@$(COQDEP) $^ > .depend
+
+install:
+	install -d $(BINDIR)
+	install -m 0755 ./ccomp $(BINDIR)
+	install -d $(SHAREDIR)
+	install -m 0644 ./compcert.ini $(SHAREDIR)
+	install -d $(MANDIR)/man1
+	install -m 0644 ./doc/ccomp.1 $(MANDIR)/man1
+	$(MAKE) -C runtime install
+ifeq ($(CLIGHTGEN),true)
+	install -m 0755 ./clightgen $(BINDIR)
+endif
+
+clean:
+	rm -f $(patsubst %, %/*.vo, $(DIRS))
+	rm -f $(patsubst %, %/.*.aux, $(DIRS))
+	rm -rf doc/html doc/*.glob
+	rm -f doc/coq2html.ml doc/coq2html doc/*.cm? doc/*.o
+	rm -f driver/Version.ml
+	rm -f compcert.ini
+	rm -f extraction/STAMP extraction/*.ml extraction/*.mli .depend.extr
+	rm -f tools/ndfun tools/modorder tools/*.cm? tools/*.o
+	-rm -f $(GENERATED) .depend
+	$(MAKE) -f Makefile.extr clean
+	$(MAKE) -C runtime clean
+	$(MAKE) -C test clean
+
+distclean:
+	$(MAKE) clean
+	rm -f Makefile.config
+
+check-admitted: $(FILES)
+	@grep -w 'admit\|Admitted\|ADMITTED' $^ || echo "Nothing admitted."
+
+# Problems with coqchk (coq 8.6):
+# Integers.Int.Z_mod_modulus_range takes forever to check
+# compcert.backend.SelectDivproof.divs_mul_shift_2 takes forever to check
+
+check-proof: $(FILES)
+	$(COQCHK) -admit compcert.lib.Integers -admit compcert.backend.SelectDivproof compcert.driver.Complements
+
+print-includes:
+	@echo $(COQINCLUDES)
+
+-include .depend
+
+FORCE:
