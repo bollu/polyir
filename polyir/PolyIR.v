@@ -146,7 +146,9 @@ Check (NMap.set).
 
 Compute (ZIndexed.t).
 Check (ZMap.get).
-Inductive exec_stmt : PolyEnvironment -> Memory -> PolyStmt -> Memory -> Prop:=
+Inductive exec_stmt : PolyEnvironment -> Memory 
+                      -> PolyStmt
+                      -> Memory -> PolyEnvironment -> Prop:=
 | exec_Sstore: forall (chunknum ix: Z)
                   (storeval: Z)
                   (storevale ixe: PolyExpr)
@@ -157,30 +159,33 @@ Inductive exec_stmt : PolyEnvironment -> Memory -> PolyStmt -> Memory -> Prop:=
     evalExprFn ixe env mem = Some ix ->
     ((polyenvIdentToChunkNum env) # ident = Some chunknum) ->
     setMemory chunknum ix storeval mem = mem' ->
-    exec_stmt env mem (Sstore ident ixe storevale) mem'
-| exec_SSeq: forall (env: PolyEnvironment)
+    exec_stmt env mem (Sstore ident ixe storevale) mem' env
+| exec_SSeq: forall (env env' env'': PolyEnvironment)
                (mem mem' mem'': Memory)
                (s1 s2: PolyStmt),
-    exec_stmt env mem s1 mem' ->
-    exec_stmt env mem' s2 mem'' ->
-    exec_stmt env mem (Sseq s1 s2) mem''
+    exec_stmt env mem s1 mem' env' ->
+    exec_stmt env' mem' s2 mem'' env'' ->
+    exec_stmt env mem (Sseq s1 s2) mem'' env''
 | exec_Sskip: forall (mem : Memory) (env: PolyEnvironment),
-    exec_stmt env mem Sskip mem.
+    exec_stmt env mem Sskip mem env.
+       
 
 
-Lemma exec_stmt_deterministic: forall (mem : Memory)
-                                 (env: PolyEnvironment)
+Lemma exec_stmt_deterministic: forall (mem mem1 mem2: Memory)
+                                 (env env1 env2: PolyEnvironment)
                                  (s: PolyStmt),
-    forall (mem1: Memory), exec_stmt env mem s mem1 ->
-                      forall (mem2: Memory), exec_stmt env mem s mem2 ->
-                                        mem1 = mem2.
+    exec_stmt env mem s mem1 env1 ->
+    exec_stmt env mem s mem2 env2 ->
+    mem1 = mem2 /\
+    env1 = env2.
 Proof.
   intros until s.
-  intros mem1 EXECS1.
+  intros EXECS1.
+  generalize dependent env2.
+  generalize dependent mem2.
   induction EXECS1;
-    intros m2 EXECS2;
+    intros mm2 env2 EXECS2;
     inversion EXECS2; subst; auto.
-
 
   - repeat (match goal with
             | [H1: ?X = ?Y, H2: ?X = ?Z |- _ ] =>  rewrite H1 in H2;
@@ -189,8 +194,9 @@ Proof.
             end).
     auto.
     
-    - assert (mem' = mem'0).
+    - assert (S1_EQ: mem' = mem'0 /\ env' = env'0).
       apply IHEXECS1_1; auto.
+      destruct S1_EQ as [MEMEQ ENVEQ].
       subst.
 
       apply IHEXECS1_2; auto.
