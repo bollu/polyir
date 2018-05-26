@@ -6,12 +6,15 @@ Require Import List.
 Require Import Ncring.
 Require Import Ring_tac.
 Require Import FunctionalExtensionality.
+Require Import Maps.
+Require Import EquivDec.
+(* 
 From mathcomp Require ssreflect ssrbool ssrfun bigop.
 Import ssreflect.SsrSyntax.
 Set Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
-Require Import Maps.
+*)
 
 Local Notation "a # b" := (ZMap.get b a) (at level 1).
 
@@ -72,20 +75,53 @@ Inductive PolyStmt :=
 
                   
 
-(* Memory chunk *)
+(** Memory chunk: allows multidimensional reads and writes **)
 Notation ChunkNum := Z.
-Notation MemoryChunk := (ZMap.t (option Value)).
+Record MemoryChunk :=
+  mkMemoryChunk {
+      memoryChunkDim: nat;
+      memoryChunkModel: list Z -> option Value
+    }.
+
+Definition const {A B : Type} (a: A) (_: B) : A := a.
+
+Definition initMemoryChunk (n: nat): MemoryChunk :=
+  mkMemoryChunk n (const None).
+
+(* Need this to perform == on list of Z *)
+Program Instance Z_eq_eqdec : EqDec Z eq := Z.eq_dec.
+
+(** Only allows legal stores, so the length of six "store index"
+must be equal to the dimension of the memory chunk *)
+Definition storeMemoryChunk (six: list Z)
+           (v: Value) (mc: MemoryChunk): MemoryChunk :=
+  let dim := memoryChunkDim mc in
+  {| memoryChunkDim := dim;
+     memoryChunkModel := if List.length six =? dim
+                         then (fun ix => if ix  == six
+                                      then Some v
+                                      else (memoryChunkModel mc) ix)
+                         else memoryChunkModel mc
+                                                 
+                                     
+  |}.
+
+Definition loadMemoryChunk (lix: list Z)(mc: MemoryChunk): option Value :=
+  if List.length lix =? (memoryChunkDim mc)
+  then (memoryChunkModel mc lix)
+  else None.
+  
 (* Memory is a map indexed by naturals to disjoint memory chunks *)
 Notation Memory := (ZMap.t (option MemoryChunk)).
 
 
 Check (PMap.set).
-Definition setMemory (chunknum: Z)
-           (chunkix: Z)
+Definition storeMemory (chunknum: Z)
+           (chunkix: list Z)
            (val: Value)
            (mem: Memory) : Memory :=
   let memchunk := mem # chunknum in
-  let memchunk' := option_map (fun chk => ZMap.set chunkix (Some val) chk)
+  let memchunk' := option_map (fun chk => storeMemoryChunk chunkix val chk )
                               memchunk
   in ZMap.set chunknum memchunk' mem.
 
@@ -104,10 +140,10 @@ Infix ">>=" := option_bind (at level 100).
                             
                             
   
-Definition getMemory (chunknum: Z)
-           (chunkix: Z)
+Definition loadMemory (chunknum: Z)
+           (chunkix: list Z)
            (mem: Memory) : option Value :=
-  (mem # chunknum) >>= (fun chk => chk # chunkix).
+  (mem # chunknum) >>= (fun chk => loadMemoryChunk chunkix chk).
   
                                                                                          
 Definition liftoption3 {a b c d: Type} (f: a -> b -> c -> d)
@@ -196,7 +232,7 @@ Fixpoint evalExprFn (pe: PolyExpr)
                    ochunknum >>=
                              (fun chunknum => oix >>=
                                                fun ix =>
-                                                 getMemory chunknum ix mem)
+                                                 loadMemory chunknum [ix] mem)
   end.
     
 
@@ -212,7 +248,7 @@ Inductive exec_stmt : PolyEnvironment -> Memory
     evalExprFn storevale env mem = Some storeval ->
     evalExprFn ixe env mem = Some ix ->
     ((polyenvIdentToChunkNum env) # ident = Some chunknum) ->
-    setMemory chunknum ix storeval mem = mem' ->
+    storeMemory chunknum [ix] storeval mem = mem' ->
     exec_stmt env mem (Sstore ident ixe storevale) mem' env
 | exec_SSeq: forall (env env' env'': PolyEnvironment)
                (mem mem' mem'': Memory)
@@ -284,17 +320,11 @@ Proof.
       apply IHEXECS1_1; auto.
       destruct S1_EQ as [MEMEQ ENVEQ].
       subst.
-
-    - assert (EQ: mem'' = mem2 /\ env'' = env2).
-      apply IHEXECS1_2. auto.
-
-      destruct EQ as [MEMEQ ENVEQ]. subst.
-      auto.
+      apply IHEXECS1_2; auto.
 
     - assert (EQ: mem' = mem2 /\ env' = env'0).
       apply IHEXECS1. auto.
 
-      
       destruct EQ as [MEMEQ ENVEQ]. subst.
       auto.
 Qed.
@@ -316,7 +346,11 @@ Fixpoint evalMultidimAffineExpr (env: PolyEnvironment)
   option_traverse (List.map (evalAffineExprFn env) s).
 
 
-Inductive ScopStmtType :=  SSTstore | SSTload.
+Inductive ScopStmtType :=
+| SSTstore: Z (* Value to store; this is temporary *)
+            -> ScopStmtType
+| SSTload: ScopStmtType.
+
 (** Note that for now, we don't care what is stored or loaded, because
 conceptually, we don't actually care either. We just want to make sure
 that the reads/writes are modeled *)
@@ -331,7 +365,7 @@ Record ScopStmt :=
       (** Function from the canonical induction variables to the schedule
          timepoint. That is, interpreted as the output dimensions when
          invoked against the input **)
-      scopStmtExecSchedule : MultidimAffineExpr;
+      scopStmtSchedule : MultidimAffineExpr;
       (** Access function to model where to read or write from **)
       scopStmtAccessFunction: MultidimAffineExpr;
       (** Type of the scop statement: store or load **)
@@ -378,16 +412,36 @@ Definition isScopStmtActive (ss: ScopStmt) (env: PolyEnvironment): bool :=
     | None => false
     end
   else false
-  .
-                                  
-                                  
+.
+
+(* Build on the abstraction of memory to store into an array *)
+Definition storeArray (arrayIdent: Ident)
+           (ix: list Value)
+           (val: Value)
+           (env: PolyEnvironment)
+           (mem: Memory) : Memory :=
+  match (polyenvIdentToChunkNum env) # arrayIdent with
+  | Some chnk => storeMemory chnk ix val mem
+  | None => mem
+  end.
+           
   
 
-
-
-
-
-
+(** TODO: make loads an actual statement in the PolyIR language **)
+Definition runScopStmt (ss: ScopStmt)
+           (env: PolyEnvironment)
+           (mem: Memory) : Memory :=
+  let oaccessix := evalMultidimAffineExpr env (scopStmtAccessFunction ss) in
+  match (oaccessix, scopStmtType ss)  with
+  | (Some accessix, SSTstore val) => storeArray
+                                    (scopStmtArrayIdent ss)
+                                    accessix
+                                    val
+                                    env
+                                    mem
+  | (Some accessix, SSTload) => mem
+  | (None, _) => mem
+  end.
 End PolyIR.
 
 
