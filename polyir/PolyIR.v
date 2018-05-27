@@ -515,6 +515,42 @@ Definition runScopStepWithEnvAndMem (s: Scop)
                  (getActiveScopStmtsInScop s env) mem.
 
 
+Definition initenv : PolyEnvironment. Admitted.
+Definition initmem : Memory. Admitted.
+
+
+
+
+(** Numbers represented with highest position to the _right_. So, 100 would be "0 0 1"
+    Essentially, the input is "flipped" from the normal human order.
+ *)
+Fixpoint findLexNextValue_ (vs: list Value)
+         (limits: list Value): option (list Value) :=
+  match (vs,limits) with
+    | ([], []) => Some []
+    | (v::vs', l::ls') => if true
+                     then Some ((v+1)%Z::vs')
+                       else option_map (cons 0%Z) (findLexNextValue_ vs' ls')
+    | (_, _) => None
+  end.
+                          
+
+(** Numbers represented with highest position to the _left_. So, 100 would be "1 0 0"
+    Limits represent the "base" of that given digit. If the number exceeds the base,
+    it rolls over. If a number is not possible, then it returns a None
+ *)
+
+Definition findLexNextValue (vs: list Value) (limits: list Value): option (list Value) :=
+  findLexNextValue_ (List.rev vs) (List.rev limits).
+
+  
+Definition stepEnvironmentIndvars (env: PolyEnvironment)
+           (ivs: list Indvar)
+           (extent: list val): env
+
+Definition runScop (s: Scop) (initenv: PolyEnvironment) (initmem: Memory): Memory :=
+
+
   
   
 
