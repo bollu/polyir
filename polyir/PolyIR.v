@@ -397,7 +397,7 @@ Record Scop :=
       (** The statements in this scop **)
       scopStmts : list ScopStmt;
       (** Induction variables in this scop **)
-      indvars : list Indvar;
+      scopIndvars : list Indvar;
     }.
 
 Fixpoint all (bs: list bool): bool :=
@@ -414,6 +414,10 @@ Fixpoint zipWith {X Y Z: Type} (f: X -> Y -> Z)
              end
   end.
 
+Definition zip {X Y : Type}
+                 (xs: list X)
+                 (ys: list Y): list (X * Y) :=
+  @zipWith X Y (X * Y) (fun x y => (x, y)) xs ys.
 
 (* Check if the current value of the induction variables is within
 the scop stmts domain *)
@@ -485,9 +489,10 @@ then this will return a valid list of bounds. Note that usually,
  However, objects such as general affine expressions should not be
  evaluated this way! *)
 Fixpoint getMultidimAffineExprExtent
-         (aes: MultidimAffineExpr)
+         (env: Environment)
          (ivs: list Indvar)
-         (env: Environment) :  list (option Value) :=
+         (aes: MultidimAffineExpr)
+  :  list (option Value) :=
   match (ivs, aes) with
   | (_, []) =>  []
   | ([], _) => []
@@ -497,7 +502,7 @@ Fixpoint getMultidimAffineExprExtent
     | None => []
     | Some val =>
       let env' := setIndvarInEnv env iv val in
-      (Some val)::(getMultidimAffineExprExtent aes' ivs' env')
+      (Some val)::(getMultidimAffineExprExtent env' ivs' aes')
     end
   end.
   
@@ -516,19 +521,16 @@ Definition runScopStepWithEnvAndMem (s: Scop)
                  (getActiveScopStmtsInScop s env) mem.
 
 
-Definition initenv : Environment. Admitted.
-Definition initmem : Memory. Admitted.
-
-
 
 
 (** Numbers represented with highest position to the _right_. So, 100 would be "0 0 1"
     Essentially, the input is "flipped" from the normal human order.
- *)
+ **)
+(** Find a way to signal "no more" without also erroring out**)
 Fixpoint findLexNextValue_ (vs: list Value)
          (limits: list Value): option (list Value) :=
   match (vs,limits) with
-    | ([], []) => Some []
+    | ([], []) => None
     | (v::vs', l::ls') => if true
                      then Some ((v+1)%Z::vs')
                        else option_map (cons 0%Z) (findLexNextValue_ vs' ls')
@@ -544,12 +546,94 @@ Fixpoint findLexNextValue_ (vs: list Value)
 Definition findLexNextValue (vs: list Value) (limits: list Value): option (list Value) :=
   findLexNextValue_ (List.rev vs) (List.rev limits).
 
+(* Set all the given induction variables in the environment *)
+Definition setIndvarsInEnv (ebegin: Environment) (ivs: list Ident) (vs: list Value): Environment :=
+  List.fold_left
+    (fun e iv_v => setIndvarInEnv e (fst iv_v) (snd iv_v))
+    (zip ivs vs) ebegin.
   
+
+
+Definition bumpEnvIndvarValues
+           (env: Environment)
+           (ivs: list Indvar)
+           (extent: list Value): option Environment :=
+  let oivvals : option (list Value) :=
+      option_traverse (List.map (evalLoopIndvar env) ivs) in
+  let onextivvals := oivvals >>= (fun ivvals => findLexNextValue ivvals extent) in
+  option_map (fun nextivvals => setIndvarsInEnv env ivs nextivvals) onextivvals.
+  
+(** update all the environment induction variables to their next value **)
+(** This is separate from bumpEnvindvarvalues for conceptual clarity.
+Could be merged later... **)
 Definition stepEnvironmentIndvars (env: Environment)
            (ivs: list Indvar)
-           (extent: list val): env
+           (extent: list Value): option Environment :=
+  bumpEnvIndvarValues env ivs extent.
 
-Definition runScop (s: Scop) (initenv: Environment) (initmem: Memory): Memory :=
+
+(* Note that the fuel is OK, we can calculate how much fuel to provide
+based on the domain extent *)
+Fixpoint runScop_
+         (fuel: nat)
+         (scopDomainExtent: list Value)
+         (env: Environment)
+         (mem: Memory)
+         (s: Scop)
+         {struct fuel}: Environment * Memory :=
+  let mem' := runScopStepWithEnvAndMem s env mem in
+  let oenv' := bumpEnvIndvarValues env (scopIndvars s) scopDomainExtent in
+  match fuel with
+  | O => (env, mem)
+  | S fuel' => 
+    match oenv' with
+    | None => (env, mem)
+    | Some env' => runScop_ fuel' scopDomainExtent env' mem' s
+    end
+  end.
+         
+
+Definition maxListPointwise (l1 l2: list Value): list Value :=
+  zipWith Z.max l1 l2.
+
+Check (fold_left).
+Definition fold_left_1 {X: Type} (f: X -> X -> X) (xs: list X): option X :=
+  match xs with
+  | [] => None
+  | x:: xs => Some (fold_left f xs x)
+  end.
+
+
+(* Get the union of the domains of all the individual scops *)
+Definition getScopDomainExtent (initenv: Environment) (s: Scop):
+  option (list Value) :=
+  let odoms : option (list (list Value)) :=
+      option_traverse (List.map
+                         (fun ss => option_traverse
+                            ((getMultidimAffineExprExtent
+                                   initenv
+                                   (scopStmtIndvars ss)
+                                   (scopStmtDomain ss)))) (scopStmts s))
+  in match odoms with
+     | None => None
+     | Some doms => fold_left_1 maxListPointwise doms
+     end.
+
+Definition getNumPointsInExtent (extent: list Value): Value :=
+  fold_left Z.mul extent 1%Z.
+  
+  
+Fixpoint runScop (s: Scop)
+         (initenv: Environment)
+         (initmem: Memory): option (Environment * Memory) :=
+  let oextent := getScopDomainExtent initenv s in
+  option_map  (fun extent =>
+                        let fuel := getNumPointsInExtent extent in
+                        runScop_ (Coqlib.nat_of_Z fuel)
+                                 extent
+                                 initenv
+                                 initmem
+                                 s) oextent.
 
 
   
