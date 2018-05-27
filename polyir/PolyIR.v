@@ -176,75 +176,76 @@ Record PolyLoop :=
     }.
 
 (* Mapping from indexing expressions to environments *)
-Record PolyEnvironment :=
-  mkPolyEnvironment {
-      polyenvIndvarToValue: ZMap.t (option Value);
-      polyenvIdentToChunkNum: ZMap.t (option ChunkNum);
-      polyenvLoopDepth: Z;
+(* Called environment because it is shared between poly an scop*)
+Record Environment :=
+  mkEnvironment {
+      envIndvarToValue: ZMap.t (option Value);
+      envIdentToChunkNum: ZMap.t (option ChunkNum);
+      envLoopDepth: Z;
     }.
 
 (** Get the induction variable of the "current" loop **)
-Definition evalLoopIndvar (env: PolyEnvironment)
+Definition evalLoopIndvar (env: Environment)
            (indvar: Indvar): option Value :=
-  (polyenvIndvarToValue env) ## indvar.
+  (envIndvarToValue env) ## indvar.
 
 (** Increase the induction variable by 1 **)
-Definition bumpLoopIndvar (env: PolyEnvironment)
-           (indvar: Indvar) : PolyEnvironment :=
-  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+Definition bumpLoopIndvar (env: Environment)
+           (indvar: Indvar) : Environment :=
+  let ivToValue : ZMap.t (option Value) := envIndvarToValue env in
   let option_oldiv := ivToValue ## indvar in
   match option_oldiv with
   | None => env
   | Some oldiv => let newIvToValue := ZMap.set indvar (Some (1 + oldiv)%Z) ivToValue in
                  {|
-                   polyenvIndvarToValue := newIvToValue; 
-                   polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
-                   polyenvLoopDepth := polyenvLoopDepth env;
+                   envIndvarToValue := newIvToValue; 
+                   envIdentToChunkNum := envIdentToChunkNum env;
+                   envLoopDepth := envLoopDepth env;
                  |}
   end.
 
 
 
-Definition addLoopToEnv (env: PolyEnvironment)
-                        (indvar: Indvar): PolyEnvironment :=
-  let oldLoopDepth := polyenvLoopDepth env in
+Definition addLoopToEnv (env: Environment)
+                        (indvar: Indvar): Environment :=
+  let oldLoopDepth := envLoopDepth env in
   let newLoopDepth := (oldLoopDepth + 1)%Z in
-  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+  let ivToValue : ZMap.t (option Value) := envIndvarToValue env in
   let newIvToValue := ZMap.set indvar (Some (0%Z)) ivToValue in
   {|
-      polyenvIndvarToValue := newIvToValue; 
-      polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
-      polyenvLoopDepth := newLoopDepth
+      envIndvarToValue := newIvToValue; 
+      envIdentToChunkNum := envIdentToChunkNum env;
+      envLoopDepth := newLoopDepth
   |}.
 
-Definition removeLoopFromEnv (env: PolyEnvironment)
-                        (indvar: Indvar): PolyEnvironment :=
-  let oldLoopDepth := polyenvLoopDepth env in
+Definition removeLoopFromEnv (env: Environment)
+                        (indvar: Indvar): Environment :=
+  let oldLoopDepth := envLoopDepth env in
   let newLoopDepth := (oldLoopDepth + 1)%Z in
-  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+  let ivToValue : ZMap.t (option Value) := envIndvarToValue env in
   let newIvToValue := ZMap.set indvar (None) ivToValue in
   {|
-      polyenvIndvarToValue := newIvToValue; 
-      polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
-      polyenvLoopDepth := newLoopDepth
+      envIndvarToValue := newIvToValue; 
+      envIdentToChunkNum := envIdentToChunkNum env;
+      envLoopDepth := newLoopDepth
   |}.
 
 
 
-Fixpoint evalAffineExprFn (env: PolyEnvironment) 
+Fixpoint evalAffineExprFn (env: Environment) 
          (ae: AffineExpr) : option Value :=
   match ae with
-  | Aindvar i => ((polyenvIndvarToValue env) ## i)
+  | Aindvar i => ((envIndvarToValue env) ## i)
   | Aconst c => Some c
   | _ => None
   end .
 
 Fixpoint evalExprFn (pe: PolyExpr)
-         (env: PolyEnvironment)
+         (env: Environment)
          (mem: Memory): option Value :=
   match pe with
   | Eaffine ae => evalAffineExprFn env ae
-  | Eload id ixe => let ochunknum := (polyenvIdentToChunkNum env) ## id in
+  | Eload id ixe => let ochunknum := (envIdentToChunkNum env) ## id in
                    let oix := evalExprFn ixe env mem in
                    ochunknum >>=
                              (fun chunknum => oix >>=
@@ -253,37 +254,37 @@ Fixpoint evalExprFn (pe: PolyExpr)
   end.
     
 
-Inductive exec_stmt : PolyEnvironment -> Memory 
+Inductive exec_stmt : Environment -> Memory 
                       -> PolyStmt
-                      -> Memory -> PolyEnvironment -> Prop:=
+                      -> Memory -> Environment -> Prop:=
 | exec_Sstore: forall (chunknum ix: Z)
                   (storeval: Z)
                   (storevale ixe: PolyExpr)
-                  (env: PolyEnvironment)
+                  (env: Environment)
                   (mem mem': Memory)
                   (ident: Ident),
     evalExprFn storevale env mem = Some storeval ->
     evalExprFn ixe env mem = Some ix ->
-    ((polyenvIdentToChunkNum env) ## ident = Some chunknum) ->
+    ((envIdentToChunkNum env) ## ident = Some chunknum) ->
     storeMemory chunknum [ix] storeval mem = mem' ->
     exec_stmt env mem (Sstore ident ixe storevale) mem' env
-| exec_SSeq: forall (env env' env'': PolyEnvironment)
+| exec_SSeq: forall (env env' env'': Environment)
                (mem mem' mem'': Memory)
                (s1 s2: PolyStmt),
     exec_stmt env mem s1 mem' env' ->
     exec_stmt env' mem' s2 mem'' env'' ->
     exec_stmt env mem (Sseq s1 s2) mem'' env''
-| exec_Sskip: forall (mem : Memory) (env: PolyEnvironment),
+| exec_Sskip: forall (mem : Memory) (env: Environment),
     exec_stmt env mem Sskip mem env
 | exec_Sloop_start: forall (mem: Memory)
                       (indvar: Indvar)
                       (ube: PolyExpr)
-                      (env: PolyEnvironment)
+                      (env: Environment)
                       (inner: PolyStmt),
     evalLoopIndvar env indvar = None (* We don't have the indvar *)
     -> exec_stmt env mem (Sloop indvar ube inner) mem (addLoopToEnv env indvar)
 | exec_Sloop_loop: forall (mem mem': Memory)
-                    (env env': PolyEnvironment)
+                    (env env': Environment)
                     (indvar: Indvar)
                     (ube: PolyExpr)
                     (ub ivval: Value)
@@ -294,7 +295,7 @@ Inductive exec_stmt : PolyEnvironment -> Memory
     exec_stmt env mem inner mem' env' ->
     exec_stmt env mem (Sloop indvar ube inner) mem' (bumpLoopIndvar env' indvar)
 | exec_Sloop_end: forall (mem: Memory)
-                    (env: PolyEnvironment)
+                    (env: Environment)
                     (indvar: Indvar)
                     (ube: PolyExpr)
                     (ub ivval: Value)
@@ -308,7 +309,7 @@ Inductive exec_stmt : PolyEnvironment -> Memory
 
 
 Lemma exec_stmt_deterministic: forall (mem mem1 mem2: Memory)
-                                 (env env1 env2: PolyEnvironment)
+                                 (env env1 env2: Environment)
                                  (s: PolyStmt),
     exec_stmt env mem s mem1 env1 ->
     exec_stmt env mem s mem2 env2 ->
@@ -358,7 +359,7 @@ Fixpoint option_traverse {A: Type} (lo: list (option A)): option (list A) :=
 
 
 (* define semantics for evaluating a schedule *)
-Fixpoint evalMultidimAffineExpr (env: PolyEnvironment)
+Fixpoint evalMultidimAffineExpr (env: Environment)
          (s: MultidimAffineExpr):  option (list Value) :=
   option_traverse (List.map (evalAffineExprFn env) s).
 
@@ -416,7 +417,7 @@ Fixpoint zipWith {X Y Z: Type} (f: X -> Y -> Z)
 
 (* Check if the current value of the induction variables is within
 the scop stmts domain *)
-Definition isScopStmtActive (env: PolyEnvironment) (ss: ScopStmt) : bool :=
+Definition isScopStmtActive (env: Environment) (ss: ScopStmt) : bool :=
   let oevalDom := evalMultidimAffineExpr env (scopStmtDomain ss) in
   let oevalIvs := option_traverse (List.map (evalLoopIndvar env)
                                        (scopStmtIndvars ss)) in
@@ -437,9 +438,9 @@ Definition isScopStmtActive (env: PolyEnvironment) (ss: ScopStmt) : bool :=
 Definition storeArray (arrayIdent: Ident)
            (ix: list Value)
            (val: Value)
-           (env: PolyEnvironment)
+           (env: Environment)
            (mem: Memory) : Memory :=
-  match (polyenvIdentToChunkNum env) ## arrayIdent with
+  match (envIdentToChunkNum env) ## arrayIdent with
   | Some chnk => storeMemory chnk ix val mem
   | None => mem
   end.
@@ -448,7 +449,7 @@ Definition storeArray (arrayIdent: Ident)
 
 (** TODO: make loads an actual statement in the PolyIR language **)
 Definition runScopStmt (ss: ScopStmt)
-           (env: PolyEnvironment)
+           (env: Environment)
            (mem: Memory) : Memory :=
   let oaccessix := evalMultidimAffineExpr env (scopStmtAccessFunction ss) in
   match (oaccessix, scopStmtType ss)  with
@@ -467,15 +468,15 @@ Check (List.filter).
 
 (* Add a new induction varible into the environment, replacing
 the previous value of the induction variable (if it existed ) *)
-Definition setIndvarInEnv (env: PolyEnvironment)
+Definition setIndvarInEnv (env: Environment)
            (indvar: Indvar)
-           (val: Value) : PolyEnvironment :=
-  let ivToValue : ZMap.t (option Value) := polyenvIndvarToValue env in
+           (val: Value) : Environment :=
+  let ivToValue : ZMap.t (option Value) := envIndvarToValue env in
   let newIvToValue := ZMap.set indvar (Some (val%Z)) ivToValue in
   {|
-      polyenvIndvarToValue := newIvToValue; 
-      polyenvIdentToChunkNum := polyenvIdentToChunkNum env;
-      polyenvLoopDepth := polyenvLoopDepth env
+      envIndvarToValue := newIvToValue; 
+      envIdentToChunkNum := envIdentToChunkNum env;
+      envLoopDepth := envLoopDepth env
   |}.
 
 (* If the list of affine expressions are valid: that is, expression at index J only refers to variables in indeces 0 <= i < J,
@@ -486,7 +487,7 @@ then this will return a valid list of bounds. Note that usually,
 Fixpoint getMultidimAffineExprExtent
          (aes: MultidimAffineExpr)
          (ivs: list Indvar)
-         (env: PolyEnvironment) :  list (option Value) :=
+         (env: Environment) :  list (option Value) :=
   match (ivs, aes) with
   | (_, []) =>  []
   | ([], _) => []
@@ -504,18 +505,18 @@ Fixpoint getMultidimAffineExprExtent
 
 (** Get the statements whose domain is contained in the current environment **)
 Definition getActiveScopStmtsInScop (s: Scop)
-           (env: PolyEnvironment): list ScopStmt :=
+           (env: Environment): list ScopStmt :=
   List.filter (isScopStmtActive env) (scopStmts s).
 
 (** Run a scop for a step with some given environment and memory. **)
 Definition runScopStepWithEnvAndMem (s: Scop)
-           (env: PolyEnvironment)
+           (env: Environment)
            (mem: Memory) : Memory :=
   List.fold_left (fun m ss => runScopStmt ss env m)
                  (getActiveScopStmtsInScop s env) mem.
 
 
-Definition initenv : PolyEnvironment. Admitted.
+Definition initenv : Environment. Admitted.
 Definition initmem : Memory. Admitted.
 
 
@@ -544,11 +545,11 @@ Definition findLexNextValue (vs: list Value) (limits: list Value): option (list 
   findLexNextValue_ (List.rev vs) (List.rev limits).
 
   
-Definition stepEnvironmentIndvars (env: PolyEnvironment)
+Definition stepEnvironmentIndvars (env: Environment)
            (ivs: list Indvar)
            (extent: list val): env
 
-Definition runScop (s: Scop) (initenv: PolyEnvironment) (initmem: Memory): Memory :=
+Definition runScop (s: Scop) (initenv: Environment) (initmem: Memory): Memory :=
 
 
   
