@@ -7,15 +7,19 @@ Require Import Ncring.
 Require Import Ring_tac.
 Require Import FunctionalExtensionality.
 Require Import Maps.
-Require Import EquivDec.
 (** Import VPL for polyhedral goodness **)
 From Vpl Require Import PedraQ DomainInterfaces.
 Require Import VplTactic.Tactic.
 Add Field Qcfield: Qcft (decidable Qc_eq_bool_correct, constants [vpl_cte]).
 
 Import PedraQ.FullDom.
-Locate imp.
-Check (join).
+
+
+(* Equalities stuff *)
+Require Import EquivDec.
+Require Import Equalities.
+
+Locate "=?".
 
 (** Cool, VPLTactic works **)
 Example demo1 (A:Type) (f: Qc -> A) (v1: Qc):
@@ -376,6 +380,9 @@ its inputs *)
     (* Check if a point is within a polyhedra *)
     Parameter isPointInPoly: PointT -> PolyT -> bool.
 
+    (* Returns whether one point is lex smaller than the other *)
+    Parameter isLexSmaller: PointT -> PointT -> option (bool).
+
     (* Find the next point that is within the polyhedra which is
     one larger in terms of lex order. return Nothing if not possible *)
     Parameter getNextLexLargerPoint: ParamsT ->
@@ -388,6 +395,16 @@ its inputs *)
                                                   option (nat).
     (* Definition of an empty polyhedra *)
     Parameter emptyPoly: PolyT.
+
+    (* Empty affine relation *)
+    Parameter emptyAffineRel: AffineRelT.
+
+    (* Take a union of two relations *)
+    Parameter unionAffineRel:  AffineRelT -> AffineRelT -> AffineRelT.
+
+    (* Weaken an affine function into an affine relation *)
+    Parameter affineFnToAffineRel: AffineFnT -> AffineRelT.
+
 
     (* Definition of union of polyhedra *)
     Parameter unionPoly:  PolyT -> PolyT -> option PolyT.
@@ -488,9 +505,12 @@ the scop stmts domain *)
     Definition runScopStmt (ss: ScopStmt)
                (se: ScopEnvironment)
                (mem: Memory) : Memory :=
-      let oaccessfn : option P.AffineFnT := P.composeAffineFunction
+      (* let oaccessfn : option P.AffineFnT := P.composeAffineFunction
                                    (scopStmtAccessFunction ss)
-                                   (scopStmtSchedule ss) in
+                                   (scopStmtSchedule ss) in *)
+      
+      let oaccessfn : option P.AffineFnT := 
+                                   Some (scopStmtAccessFunction ss) in
 
       let viv : P.PointT := scopenvVIV se in
       
@@ -693,6 +713,62 @@ based on the domain extent *)
                               (scopenvParams se)
                               dom >>= fun fuel =>
                                         Some (runScop_ fuel dom se initmem s).
+
+
+    
+    Definition getScopStmtLoads (ss: ScopStmt): P.AffineRelT :=
+      match scopStmtType ss with
+      | SSTstore _ => P.emptyAffineRel
+      | SSTload =>  P.affineFnToAffineRel (scopStmtAccessFunction ss)
+      end.
+
+    Definition getScopStmtStores (ss: ScopStmt): P.AffineRelT :=
+      match scopStmtType ss with
+      | SSTload => P.emptyAffineRel
+      | SSTstore _ =>  P.affineFnToAffineRel (scopStmtAccessFunction ss)
+      end.
+    
+    Definition getScopStores(s: Scop): P.AffineRelT :=
+      List.fold_left (fun rel ss =>
+                        P.unionAffineRel rel
+                                         (getScopStmtStores ss))
+                     (scopStmts s)
+                     P.emptyAffineRel.
+    
+    Definition getScopLoads(s: Scop): P.AffineRelT :=
+      List.fold_left (fun rel ss =>
+                        P.unionAffineRel rel
+                                         (getScopStmtLoads ss))
+                     (scopStmts s)
+                     P.emptyAffineRel.
+
+
+
+    (* Given a dependence relation and a schedule, we define what it means
+    for a schedule to respect a dependence relation *)
+    Definition scheduleRespectsDependence (sched: P.AffineFnT)
+               (dep: P.AffineRelT) : Prop :=
+      forall (p1 q1: P.PointT), (P.arePointsRelated p1 q1 dep) = true ->
+                 exists (p2 q2: P.PointT),
+                                 P.mapPoint sched p1 = Some q1 ->
+                                 P.mapPoint sched p2 = Some q2 ->
+                                 P.arePointsRelated (q1) (q2) dep = true.
+
+    (* Proposition that deines what it means for an affine relation to be
+    a dependence polyhedra between two affine relations *)
+    Definition relationIsDependenceBetweenRelations
+      (r1 r2: P.AffineRelT)
+        (dep: P.AffineRelT): Prop :=
+      forall (tp1 tp2 ixp1 ixp2: P.PointT)
+        (TP1_MAPSTO_IXP1: P.arePointsRelated  tp1 ixp1 r1 = true)
+        (TP2_MAPSTO_IXP2: P.arePointsRelated tp2 ixp2 r2 = true)
+        (IXEQ: ixp1 = ixp2)
+        (TP_LEX_ORDERED: P.isLexSmaller tp1 tp2 = Some true),
+        P.arePointsRelated tp1 tp2 dep = true.
+                                                       
+
   End SCOP.
+
+
 End PolyIR.
                                         
