@@ -375,6 +375,8 @@ its inputs *)
     Parameter evalPoint: ParamsT -> PointT -> option (list Z).
     (* Have some way to compose affine functions *)
     Parameter composeAffineFunction: AffineFnT -> AffineFnT -> option AffineFnT.
+    (* Compute the inverse of an affine function *)
+    Parameter invertAffineFunction: AffineFnT -> option AffineFnT.
     (* Have some way to check if two points are related *)
     Parameter arePointsRelated: PointT -> PointT -> AffineRelT -> bool.
     (* Check if a point is within a polyhedra *)
@@ -408,6 +410,29 @@ its inputs *)
 
     (* Definition of union of polyhedra *)
     Parameter unionPoly:  PolyT -> PolyT -> option PolyT.
+
+    (** Defines what it means to be a dependence relation. This is the
+        over-approximate definition. In particular, it does not ask for
+        exact dependence relations .
+        t1 --R1--> p 
+        t2 --R2--> p
+        t1 < t2
+        ===============
+          t1 --D--> t2
+    **)
+    Definition relationIsDependenceBetweenRelations
+      (r1 r2: AffineRelT)
+        (dep: AffineRelT): Prop :=
+      forall (tp1 tp2 ixp1 ixp2: PointT)
+        (TP1_MAPSTO_IXP1: arePointsRelated  tp1 ixp1 r1 = true)
+        (TP2_MAPSTO_IXP2: arePointsRelated tp2 ixp2 r2 = true)
+        (IXEQ: ixp1 = ixp2)
+        (TP_LEX_ORDERED: isLexSmaller tp1 tp2 = Some true),
+        arePointsRelated tp1 tp2 dep = true.
+
+    (* A function to compute the dependence polyhedra of two relations *)
+    Parameter getDependenceRelation: AffineRelT -> AffineRelT -> option AffineRelT.
+    
     
   End POLYHEDRAL_THEORY.
 
@@ -705,7 +730,7 @@ based on the domain extent *)
       fold_left (fun op q => op >>= fun p => P.unionPoly p q) domains (Some P.emptyPoly) .
     
     
-    Fixpoint runScop (s: Scop)
+    Definition runScop (s: Scop)
              (se: ScopEnvironment)
              (initmem: Memory): option (ScopEnvironment * Memory) :=
       getScopDomain s >>=
@@ -746,27 +771,168 @@ based on the domain extent *)
 
     (* Given a dependence relation and a schedule, we define what it means
     for a schedule to respect a dependence relation *)
-    Definition scheduleRespectsDependence (sched: P.AffineFnT)
+    Definition scheduleRespectsDependence (schedule: P.AffineFnT)
                (dep: P.AffineRelT) : Prop :=
       forall (p1 q1: P.PointT), (P.arePointsRelated p1 q1 dep) = true ->
                  exists (p2 q2: P.PointT),
-                                 P.mapPoint sched p1 = Some q1 ->
-                                 P.mapPoint sched p2 = Some q2 ->
+                                 P.mapPoint schedule p1 = Some q1 ->
+                                 P.mapPoint schedule p2 = Some q2 ->
                                  P.arePointsRelated (q1) (q2) dep = true.
 
-    (* Proposition that deines what it means for an affine relation to be
-    a dependence polyhedra between two affine relations *)
-    Definition relationIsDependenceBetweenRelations
-      (r1 r2: P.AffineRelT)
-        (dep: P.AffineRelT): Prop :=
-      forall (tp1 tp2 ixp1 ixp2: P.PointT)
-        (TP1_MAPSTO_IXP1: P.arePointsRelated  tp1 ixp1 r1 = true)
-        (TP2_MAPSTO_IXP2: P.arePointsRelated tp2 ixp2 r2 = true)
-        (IXEQ: ixp1 = ixp2)
-        (TP_LEX_ORDERED: P.isLexSmaller tp1 tp2 = Some true),
-        P.arePointsRelated tp1 tp2 dep = true.
-                                                       
+    Definition scheduleRespectsRAW (schedule: P.AffineFnT) (s: Scop) : Prop :=
+      exists (rel: P.AffineRelT),
+        (P.getDependenceRelation (getScopStores s)
+                                 (getScopLoads s) = Some rel) /\
+      scheduleRespectsDependence schedule rel.
 
+    Definition scheduleRespectsWAW (schedule: P.AffineFnT) (s: Scop) : Prop :=
+      exists (rel: P.AffineRelT),
+        (P.getDependenceRelation (getScopStores s)
+                                 (getScopStores s) = Some rel) /\
+      scheduleRespectsDependence schedule rel.
+
+
+    Definition applyScheduleToScopStmt
+               (schedule: P.AffineFnT)
+               (ss: ScopStmt): option ScopStmt :=
+      option_map (fun newschedule => {|
+                      scopStmtArrayIdent := scopStmtArrayIdent ss;
+                      scopStmtDomain:= scopStmtDomain ss;
+                      scopStmtSchedule := newschedule;
+                      scopStmtAccessFunction := scopStmtAccessFunction ss;
+                      scopStmtType := scopStmtType ss
+                    |}) (P.composeAffineFunction (scopStmtSchedule ss) schedule).
+
+    Definition applyScheduleToScop
+               (schedule: P.AffineFnT)
+               (scop: Scop): option Scop :=
+      option_map (fun newScopStmts => {|
+                      scopStmts :=  newScopStmts;
+                      scopIndvars := scopIndvars scop;
+                    |})
+                 (option_traverse
+                    (List.map (applyScheduleToScopStmt schedule)
+                              (scopStmts scop))).
+
+    (** =============PROOF============= **)
+    
+    Lemma applyScheduleToScopStmt_preserves_scop_stmt_domain:
+      forall (ss ss': ScopStmt)
+        (schedule: P.AffineFnT)
+        (MAPPED: applyScheduleToScopStmt schedule ss = Some ss'),
+        scopStmtDomain ss = scopStmtDomain ss'.
+    Proof.
+      intros.
+      unfold applyScheduleToScopStmt in MAPPED.
+      simpl.
+
+      destruct (P.composeAffineFunction (scopStmtSchedule ss) schedule);
+        simpl; auto; inversion MAPPED; auto.
+    Qed.
+
+    Hint Resolve applyScheduleToScopStmt_preserves_scop_stmt_domain.
+    Hint Rewrite applyScheduleToScopStmt_preserves_scop_stmt_domain.
+
+    Lemma getScopDomain_cons: forall (ss : ScopStmt)
+                                (sslist: list ScopStmt)
+                                sindvar,
+        getScopDomain {| scopStmts := ss :: sslist; scopIndvars := sindvar |} =
+        getScopDomain {| scopStmts := sslist; scopIndvars := sindvar; |}.
+    Proof.
+    Abort.
+      
+      
+    Lemma applyScheduleToScop_preserves_scop_domain:
+      forall (scop scop': Scop)
+        (schedule: P.AffineFnT)
+        (MAPPED: applyScheduleToScop schedule scop = Some scop'),
+        getScopDomain scop = getScopDomain scop'.
+    Proof.
+      intros.
+      destruct scop as [ss sindvar].
+      induction ss; simpl in *.
+      - (* base case *)
+        unfold applyScheduleToScop in MAPPED.
+        inversion MAPPED.
+        auto.
+
+      - simpl in MAPPED.
+    Admitted.
+
+
+    
+    Hint Resolve applyScheduleToScop_preserves_scop_domain.
+    Hint Rewrite applyScheduleToScop_preserves_scop_domain.
+      
+      
+      
+        
+    Section SEMANTICS_PRESERVATION_PROOF.
+      (** Preservation properties of applyScheduleToScop **)
+      Variable schedule: P.AffineFnT.
+      Variable scop scop': Scop.
+
+      Variable RESPECTRAW: scheduleRespectsRAW schedule scop.
+      Variable RESPECTWAW: scheduleRespectsWAW schedule scop.
+      Variable MAPPED: applyScheduleToScop schedule scop = Some scop'.
+
+      Lemma runScopStepWithEnvAndMem_eq: 
+      forall (se: ScopEnvironment)
+       (initmem: Memory),
+        runScopStepWithEnvAndMem scop se initmem = runScopStepWithEnvAndMem
+                                                     scop' se initmem.
+      Proof.
+      Admitted.
+
+      Hint Resolve runScopStepWithEnvAndMem_eq.
+
+      
+      Theorem runScop_eq:
+        forall (fuel: nat)
+          (se: ScopEnvironment)
+          (initmem: Memory)
+          (scopdom: P.PolyT)
+          (SCOPDOMAIN: Some scopdom = getScopDomain scop'),
+      runScop_ fuel scopdom se initmem scop =
+      runScop_ fuel scopdom se initmem scop'.
+      Proof.
+        intros fuel.
+        induction fuel; intros; auto.
+        - simpl.
+          destruct (stepScopenv scopdom se) eqn:SCOPENV'; auto.
+          rewrite runScopStepWithEnvAndMem_eq.
+          apply IHfuel; auto.
+      Qed.
+
+      Hint Resolve runScop_eq.
+
+
+      (* Main theorem: Applying a valid schedule on a scop preserves
+    the semantics of the scop *)
+      Theorem applying_valid_schedule_preserves_semantics:
+        forall (se: ScopEnvironment)
+          (initmem: Memory),
+        runScop scop se initmem = runScop scop' se initmem.
+      Proof.
+        intros.
+        unfold runScop.
+        
+        erewrite applyScheduleToScop_preserves_scop_domain; eauto.
+        destruct (getScopDomain scop') eqn:SCOPDOMAIN;  auto.
+        rename p into scopdom.
+        simpl.
+
+        destruct (P.getOverapproximationNumPointsInPoly (scopenvParams se) scopdom)
+                 eqn:FUEL; auto.
+        rename n into fuel.
+        simpl; auto.
+      Qed.
+
+    End SEMANTICS_PRESERVATION_PROOF.
+
+
+    
+    
   End SCOP.
 
 
