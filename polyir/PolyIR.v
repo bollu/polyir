@@ -840,9 +840,27 @@ based on the domain extent *)
         getScopDomain {| scopStmts := sslist; scopIndvars := sindvar; |}.
     Proof.
     Abort.
+
+    Lemma applyScheduleToScopStmt_access_fn_eq:
+      forall (ss ss': ScopStmt)
+        (schedule: P.AffineFnT)
+        (MAPPED: applyScheduleToScopStmt schedule ss = Some ss'),
+        scopStmtAccessFunction ss = scopStmtAccessFunction ss'.
+    Proof.
+      intros.
+      unfold applyScheduleToScopStmt in *.
+      destruct (P.composeAffineFunction (scopStmtSchedule ss) schedule);
+        simpl in MAPPED;
+        inversion MAPPED;
+        auto.
+    Qed.
+
+    Hint Resolve applyScheduleToScopStmt_access_fn_eq.
+    Hint Rewrite applyScheduleToScopStmt_access_fn_eq.
+
       
       
-    Lemma applyScheduleToScop_preserves_scop_domain:
+    Lemma applyScheduleToScop_scop_domain_eq:
       forall (scop scop': Scop)
         (schedule: P.AffineFnT)
         (MAPPED: applyScheduleToScop schedule scop = Some scop'),
@@ -858,11 +876,25 @@ based on the domain extent *)
 
       - simpl in MAPPED.
     Admitted.
-
+    
+    Hint Resolve applyScheduleToScop_scop_domain_eq.
+    Hint Rewrite applyScheduleToScop_scop_domain_eq.
 
     
-    Hint Resolve applyScheduleToScop_preserves_scop_domain.
-    Hint Rewrite applyScheduleToScop_preserves_scop_domain.
+      Lemma isScopStmtActive_eq: forall (se: ScopEnvironment)
+                                   (ss ss': ScopStmt)
+                                   (schedule: P.AffineFnT)
+                                   (MAPPEDSS: Some ss' =
+                                            applyScheduleToScopStmt schedule ss),
+          isScopStmtActive se ss = isScopStmtActive se ss'.
+      Proof.
+        intros.
+        unfold isScopStmtActive.
+        eauto.
+      Qed.
+    Hint Resolve isScopStmtActive_eq.
+    Hint Rewrite isScopStmtActive_eq.
+    
       
       
       
@@ -876,12 +908,48 @@ based on the domain extent *)
       Variable RESPECTWAW: scheduleRespectsWAW schedule scop.
       Variable MAPPED: applyScheduleToScop schedule scop = Some scop'.
 
-      Lemma runScopStepWithEnvAndMem_eq: 
-      forall (se: ScopEnvironment)
-       (initmem: Memory),
-        runScopStepWithEnvAndMem scop se initmem = runScopStepWithEnvAndMem
-                                                     scop' se initmem.
+
+        
+      Lemma getActiveScopStmtsInScop_eq:
+        forall (se: ScopEnvironment),
+          exists (ss': list ScopStmt),
+          option_traverse (List.map (applyScheduleToScopStmt schedule)
+                   (getActiveScopStmtsInScop scop se)) = Some ss' /\
+          getActiveScopStmtsInScop scop' se = ss'.
       Proof.
+        intros.
+        unfold getActiveScopStmtsInScop.
+      Admitted.
+        
+          
+        Lemma runScopStepWithEnvAndMem_eq:
+      forall (se: ScopEnvironment)
+       (mem: Memory),
+        runScopStepWithEnvAndMem scop se mem = runScopStepWithEnvAndMem
+                                                     scop' se mem.
+      Proof.
+        intros.
+        unfold runScopStepWithEnvAndMem.
+
+        assert (ACTIVE_STMTS_IN_SCOP': exists ss': list ScopStmt,
+                   option_traverse
+                     (List.map (applyScheduleToScopStmt schedule)
+                               (getActiveScopStmtsInScop scop se)) =
+                   Some ss' /\
+                   getActiveScopStmtsInScop scop' se = ss'
+               ).
+        admit.
+
+        destruct ACTIVE_STMTS_IN_SCOP' as [ss' [SS' ACTIVE_IN_SCOP']].
+        rewrite ACTIVE_IN_SCOP'.
+
+        remember (getActiveScopStmtsInScop scop se) as ss eqn:ACTIVE_IN_SCOP.
+
+        (* Induction on the scop statements themseleves *)
+        induction ss.
+
+        - simpl in *. inversion SS'. auto.
+        - 
       Admitted.
 
       Hint Resolve runScopStepWithEnvAndMem_eq.
@@ -917,7 +985,7 @@ based on the domain extent *)
         intros.
         unfold runScop.
         
-        erewrite applyScheduleToScop_preserves_scop_domain; eauto.
+        erewrite applyScheduleToScop_scop_domain_eq; eauto.
         destruct (getScopDomain scop') eqn:SCOPDOMAIN;  auto.
         rename p into scopdom.
         simpl.
@@ -930,8 +998,6 @@ based on the domain extent *)
 
     End SEMANTICS_PRESERVATION_PROOF.
 
-
-    
     
   End SCOP.
 
