@@ -1,7 +1,7 @@
-Require Import PolyIR.
-Require Import SCEV.
 Require Import ZArith.
 Require Import Maps.
+Require Export PolyIRDefinition.
+Require Export SCEV.
 
 
 (* SSReflect usage *)
@@ -11,7 +11,6 @@ Set Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
-Import PolyIR.PolyIR.
 Print Module SCEV.
 
 Import SCEV.RECURRENCE.
@@ -81,6 +80,7 @@ Fixpoint findSCEVForAffineExpr (s: PolyStmt) (expr: AffineExpr) (ivCRs: IndvarTo
 Definition match_env (e: Environment) (ivtocr: IndvarToCRMap): Prop.
   Admitted.
 
+  (*
 Theorem mkCRForIndvarsConsistent: forall (s: PolyStmt)
                           (ivtocr: IndvarToCRMap)
                           (MKCRFORINDVARS: ivtocr = mkCRForIndvars s)
@@ -91,9 +91,5 @@ Theorem mkCRForIndvarsConsistent: forall (s: PolyStmt)
                           (MATCHENV: match_env env ivtocr),
     
     v = CReval 
+    *)
     
-
-
-
-
-

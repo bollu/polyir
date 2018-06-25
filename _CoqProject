@@ -5,3 +5,4 @@ lib/Maps.v
 polyir/PolyIR.v
 polyir/SCEV.v
 polyir/PolyIRToSCEV.v
+polyir/PolyIRDefinition.v
