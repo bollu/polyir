@@ -1,8 +1,7 @@
--R polyir ""
--R lib ""
-lib/Coqlib.v
-lib/Maps.v
-polyir/PolyIR.v
-polyir/SCEV.v
-polyir/PolyIRToSCEV.v
+-R polyir/ PolyIR
+polyir/Coqlib.v
+polyir/Maps.v
 polyir/PolyIRDefinition.v
+polyir/PolyIRToSCEV.v
+polyir/SCEV.v
+polyir/polyir.v
